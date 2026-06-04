@@ -1,0 +1,22 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+*.log
+*.wav
+*.mp3
+*.pcm
+
+# 题目原始材料，避免上传
+Take_Home_Exam_*.txt
+Take_Home_Exam_*.pdf
+Take Home Exam*.pdf
+资料.md
+
+# 编辑器
+.vscode/
+.idea/

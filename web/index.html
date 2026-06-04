@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VoiceAgent · 园区访客登记</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { height: 100%; background: #0b0d12; color: #e5e7eb; }
+  @keyframes pulse-ring {
+    0%   { transform: scale(0.95); opacity: 0.8; }
+    70%  { transform: scale(1.2);  opacity: 0; }
+    100% { transform: scale(1.2);  opacity: 0; }
+  }
+  .pulse::after {
+    content: ''; position: absolute; inset: 0; border-radius: 9999px;
+    border: 3px solid currentColor; animation: pulse-ring 1.4s cubic-bezier(.4,0,.6,1) infinite;
+  }
+  .bubble-u { background: #1f2937; border-bottom-right-radius: 4px; }
+  .bubble-a { background: #064e3b; border-bottom-left-radius: 4px; }
+  .scrollbar::-webkit-scrollbar { width: 6px; }
+  .scrollbar::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+</style>
+</head>
+<body class="font-sans">
+<div class="min-h-screen flex flex-col">
+
+  <!-- Top bar: status + timer -->
+  <header class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div id="dot" class="w-2.5 h-2.5 rounded-full bg-gray-500"></div>
+      <span class="text-sm text-gray-400">状态</span>
+      <span id="stage" class="text-sm font-medium text-gray-200">未连接</span>
+    </div>
+    <div class="text-right">
+      <div class="text-xs text-gray-500">通话时长</div>
+      <div id="timer" class="text-2xl font-mono tabular-nums text-emerald-400">00.0s</div>
+      <div id="slaHint" class="text-[10px] text-gray-500">目标 ≤ 25s</div>
+    </div>
+  </header>
+
+  <!-- Conversation panel -->
+  <main id="panel" class="flex-1 overflow-y-auto scrollbar px-4 sm:px-8 py-6 space-y-3 max-w-3xl mx-auto w-full">
+    <div class="text-center text-xs text-gray-600">点击下方"开始通话"，对着麦克风说话即可</div>
+  </main>
+
+  <!-- Bottom control bar -->
+  <footer class="border-t border-gray-800 px-6 py-5 flex items-center justify-center gap-6">
+    <button id="callBtn" class="relative w-16 h-16 rounded-full bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-2xl text-white shadow-lg shadow-emerald-500/30">
+      <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+    </button>
+    <div id="micState" class="text-sm text-gray-500 select-none">未开始</div>
+  </footer>
+</div>
+
+<script>
+const $stage = document.getElementById('stage');
+const $dot   = document.getElementById('dot');
+const $timer = document.getElementById('timer');
+const $panel = document.getElementById('panel');
+const $btn   = document.getElementById('callBtn');
+const $mic   = document.getElementById('micState');
+const $sla   = document.getElementById('slaHint');
+
+const STAGE = {
+  idle:    { text: '未连接',  color: 'bg-gray-500' },
+  connect: { text: '连接中',  color: 'bg-yellow-400' },
+  listen:  { text: '聆听中',  color: 'bg-emerald-400' },
+  asr:     { text: '识别中',  color: 'bg-sky-400' },
+  thinking:{ text: '思考中',  color: 'bg-violet-400' },
+  tts:     { text: '回答中',  color: 'bg-pink-400' },
+  done:    { text: '已挂断',  color: 'bg-gray-500' },
+  error:   { text: '出错',    color: 'bg-red-500' },
+};
+
+let ws = null;
+let audioCtx = null;
+let micStream = null;
+let processor = null;
+let micSource = null;
+let inCall = false;
+let startTime = 0;
+let timerInterval = null;
+let currentPartialEl = null;
+let currentAgentEl = null;
+let playQueue = [];
+let playing = false;
+
+function setStage(name) {
+  const s = STAGE[name] || STAGE.idle;
+  $stage.textContent = s.text;
+  $dot.className = `w-2.5 h-2.5 rounded-full ${s.color}`;
+}
+
+function startTimer() {
+  startTime = performance.now();
+  timerInterval = setInterval(() => {
+    const sec = (performance.now() - startTime) / 1000;
+    $timer.textContent = sec.toFixed(1) + 's';
+    if (sec > 25) {
+      $timer.classList.remove('text-emerald-400');
+      $timer.classList.add('text-amber-400');
+    }
+  }, 100);
+}
+
+function stopTimer() {
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = null;
+}
+
+function addBubble(role, text) {
+  const wrap = document.createElement('div');
+  wrap.className = role === 'user' ? 'flex justify-end' : 'flex justify-start';
+  const b = document.createElement('div');
+  b.className = `max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${role === 'user' ? 'bubble-u text-gray-100' : 'bubble-a text-emerald-50'}`;
+  b.textContent = text;
+  wrap.appendChild(b);
+  $panel.appendChild(wrap);
+  $panel.scrollTop = $panel.scrollHeight;
+  return b;
+}
+
+function setPartial(text) {
+  if (!currentPartialEl) {
+    currentPartialEl = addBubble('user', text);
+    currentPartialEl.classList.add('opacity-60', 'italic');
+  } else {
+    currentPartialEl.textContent = text;
+  }
+}
+
+function commitUserBubble(text) {
+  if (currentPartialEl) {
+    currentPartialEl.textContent = text;
+    currentPartialEl.classList.remove('opacity-60', 'italic');
+    currentPartialEl = null;
+  } else {
+    addBubble('user', text);
+  }
+}
+
+// --- audio playback (server PCM16 16k -> AudioContext) ---
+async function enqueuePcm(arrayBuf) {
+  const i16 = new Int16Array(arrayBuf);
+  const f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+  playQueue.push(f32);
+  if (!playing) drainPlayback();
+}
+
+async function drainPlayback() {
+  playing = true;
+  while (playQueue.length) {
+    const f32 = playQueue.shift();
+    const buf = audioCtx.createBuffer(1, f32.length, 16000);
+    buf.copyToChannel(f32, 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    const dur = f32.length / 16000;
+    src.start();
+    await new Promise(r => setTimeout(r, dur * 1000));
+  }
+  playing = false;
+}
+
+// --- mic capture, downsample to 16k, send PCM16 ---
+function downsampleTo16k(f32input, inputRate) {
+  if (inputRate === 16000) return floatToPcm16(f32input);
+  const ratio = inputRate / 16000;
+  const outLen = Math.floor(f32input.length / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const s = f32input[Math.floor(i * ratio)];
+    out[i] = Math.max(-1, Math.min(1, s)) * 0x7fff;
+  }
+  return out;
+}
+
+function floatToPcm16(f32) {
+  const out = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) {
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    out[i] = s * 0x7fff;
+  }
+  return out;
+}
+
+async function startCall() {
+  inCall = true;
+  $btn.classList.remove('bg-emerald-500', 'hover:bg-emerald-400');
+  $btn.classList.add('bg-red-500', 'hover:bg-red-400', 'pulse', 'text-red-400');
+  $mic.textContent = '正在通话…点击挂断';
+  setStage('connect');
+  startTimer();
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  // sampleRate hint isn't always honored; we resample defensively below.
+
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  micSource = audioCtx.createMediaStreamSource(micStream);
+  processor = audioCtx.createScriptProcessor(2048, 1, 1);
+  micSource.connect(processor);
+  processor.connect(audioCtx.destination);
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/voice`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStage('listen');
+    processor.onaudioprocess = (e) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const f32 = e.inputBuffer.getChannelData(0);
+      const pcm = downsampleTo16k(f32, audioCtx.sampleRate);
+      ws.send(pcm.buffer);
+    };
+  };
+
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'partial')  { setStage('asr'); setPartial(msg.text); }
+      else if (msg.type === 'user')     { commitUserBubble(msg.text); }
+      else if (msg.type === 'agent_begin') { currentAgentEl = addBubble('agent', ''); }
+      else if (msg.type === 'agent_chunk') {
+        if (!currentAgentEl) currentAgentEl = addBubble('agent', '');
+        currentAgentEl.textContent += msg.text;
+        $panel.scrollTop = $panel.scrollHeight;
+      }
+      else if (msg.type === 'status')   { setStage(msg.stage); }
+      else if (msg.type === 'agent_end'){ currentAgentEl = null; setStage('listen'); }
+      else if (msg.type === 'bye')      { setStage('done'); endCall(); }
+    } else {
+      enqueuePcm(ev.data);
+    }
+  };
+
+  ws.onerror = () => { setStage('error'); };
+  ws.onclose = () => { if (inCall) endCall(); };
+}
+
+function endCall() {
+  inCall = false;
+  setStage('done');
+  stopTimer();
+  $btn.classList.remove('bg-red-500', 'hover:bg-red-400', 'pulse', 'text-red-400');
+  $btn.classList.add('bg-emerald-500', 'hover:bg-emerald-400');
+  $mic.textContent = '已结束 · 点击重新开始';
+  try { ws && ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'bye' })); } catch {}
+  try { processor && processor.disconnect(); } catch {}
+  try { micSource && micSource.disconnect(); } catch {}
+  try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch {}
+  try { audioCtx && audioCtx.close(); } catch {}
+  try { ws && ws.close(); } catch {}
+  ws = null;
+}
+
+$btn.addEventListener('click', () => {
+  if (inCall) endCall(); else startCall().catch(err => {
+    console.error(err);
+    setStage('error');
+    $mic.textContent = '麦克风不可用：' + err.message;
+    endCall();
+  });
+});
+
+setStage('idle');
+</script>
+</body>
+</html>
