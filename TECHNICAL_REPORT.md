@@ -10,18 +10,16 @@
 ### 2.1 接入层：浏览器麦克风 vs Twilio PSTN
 **选择浏览器（WebRTC/Web Audio API）**。
 
-- Twilio 试用号会强制播放 5-8s 英文广告，吃掉宝贵的 25s 预算；
+- Twilio 试用号会强制播放 5-8s 英文广告，浪费 25s 的预算；
 - Twilio 中国号码不可申请，跨境呼叫延迟+合规复杂；
-- 阿里云语音服务（dyvmsapi）主要面向外呼场景，CCC 联络中心面向企业级，对一周作业过重；
-- 浏览器麦克风是 WebRTC 通用能力，PCM 16k 直传 bridge，**没有 μ-law 编解码、没有运营商协议、没有公网号码合规**。
-
-题目允许"号码方案你说了算"，README 与答辩中明确说明此 trade-off。
+- 阿里云语音服务（dyvmsapi）主要面向外呼场景，CCC 联络中心面向企业级，不使用；
+- 浏览器麦克风是 WebRTC 通用能力，PCM 16k 直传 bridge，**没有 μ-law 编解码、没有运营商协议、没有公网号码合规**；
+- 现构思，采用微信小程序或者网页的形式传送语音。
 
 ### 2.2 STT/TTS：阿里云 NLS vs Groq Whisper / Edge TTS
 **选择阿里云智能语音交互（NLS）**：
 - 国内节点延迟低（实测 ASR partial < 300ms，TTS 首字节 ~300ms）；
 - 中文场景识别质量明显优于 Whisper（虽然 Whisper-large 也强，但 Groq 海外节点延迟+90ms）；
-- 免费额度 3 个月够整个开发周期；
 - WebSocket 双向流式协议适合 Voice Agent。
 
 ### 2.3 LLM 层：Hermes Agent
@@ -95,6 +93,5 @@ JSON 未输出 → push 未触发。
 5. **README 加 Demo GIF / 录屏**：让 reviewer 不跑也能看到效果。
 
 ## 7. 进一步可挖
-- **Serverless 部署**：bridge_server 是无状态的（除了内存里的 SessionManager），可拆成 Cloudflare Workers + Durable Object，或直接 Fly.io / Render。但本地够 demo，不强求。
 - **多路并发**：FastAPI + asyncio 单进程已天然并发，瓶颈在 Hermes 单例的 HTTP 队列上。如要严肃压测，需要 Hermes 横向扩展。
-- **门卫查询 Agent**：交付要求里的加分项。可以在 bridge 加一个 `/admin/voice` 端点，相同管道，跑另一个 skill（visitor-query）。SQLite 持久化已经在 `~/.hermes/state.db` 等位置存在，可借力。
+- **门卫查询 Agent**：交付要求里的加分项。可以在 bridge 加一个 `/admin/voice` 端点，相同管道，跑另一个 skill（visitor-query）。SQLite 持久化已经在 `~/.hermes/state.db` 等位置存在。
