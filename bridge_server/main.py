@@ -39,7 +39,7 @@ from .hermes_client import hermes
 from .session_manager import CallSession, sessions
 from .stt_service import AsrSession
 from .tts_service import synthesize
-from .visitor_store import upsert_visitor
+from .visitor_store import upsert_visitor, sync_hermes_memory
 
 logging.basicConfig(
     level=settings.log_level,
@@ -48,6 +48,8 @@ logging.basicConfig(
 logger = logging.getLogger("bridge")
 
 app = FastAPI(title="VoiceAgent Bridge")
+
+sync_hermes_memory()
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 if WEB_DIR.exists():

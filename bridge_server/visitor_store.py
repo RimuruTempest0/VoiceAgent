@@ -43,6 +43,11 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def sync_hermes_memory() -> None:
+    """Public entry point — call on startup or after manual DB changes."""
+    _sync_hermes_memory()
+
+
 def upsert_visitor(visitor: dict) -> None:
     """Insert or update a visitor record keyed by license plate."""
     plate = (visitor.get("plate") or "").strip()
