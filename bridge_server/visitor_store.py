@@ -34,11 +34,17 @@ def _get_conn() -> sqlite3.Connection:
             company TEXT NOT NULL DEFAULT '',
             purpose TEXT NOT NULL DEFAULT '',
             phone TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL DEFAULT '',
             visit_count INTEGER NOT NULL DEFAULT 1,
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL
         )
     """)
+    # Migrate: add name column if missing (existing DBs)
+    try:
+        conn.execute("ALTER TABLE visitors ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
@@ -57,23 +63,26 @@ def upsert_visitor(visitor: dict) -> None:
     company = (visitor.get("company") or "").strip()
     purpose = (visitor.get("purpose") or "").strip()
     phone = (visitor.get("phone") or "").strip()
+    name = (visitor.get("name") or "").strip()
     now = datetime.now().isoformat(timespec="seconds")
 
     with _get_conn() as conn:
-        cur = conn.execute("SELECT visit_count FROM visitors WHERE plate=?", (plate,))
+        cur = conn.execute("SELECT visit_count, name FROM visitors WHERE plate=?", (plate,))
         row = cur.fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO visitors(plate, company, purpose, phone, visit_count, first_seen, last_seen) "
-                "VALUES (?, ?, ?, ?, 1, ?, ?)",
-                (plate, company, purpose, phone, now, now),
+                "INSERT INTO visitors(plate, company, purpose, phone, name, visit_count, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+                (plate, company, purpose, phone, name, now, now),
             )
             logger.info("New visitor: plate=%s company=%s", plate, company)
         else:
+            existing_name = row[1] or ""
+            final_name = name if name else existing_name
             conn.execute(
-                "UPDATE visitors SET company=?, purpose=?, phone=?, "
+                "UPDATE visitors SET company=?, purpose=?, phone=?, name=?, "
                 "visit_count=visit_count+1, last_seen=? WHERE plate=?",
-                (company, purpose, phone, now, plate),
+                (company, purpose, phone, final_name, now, plate),
             )
             logger.info("Return visitor: plate=%s (visit #%d)", plate, row[0] + 1)
         conn.commit()
@@ -85,7 +94,7 @@ def list_visitors() -> list[dict]:
     """Return all visitors ordered by most recent visit."""
     with _get_conn() as conn:
         cur = conn.execute(
-            "SELECT plate, company, purpose, phone, visit_count, first_seen, last_seen "
+            "SELECT plate, company, purpose, phone, name, visit_count, first_seen, last_seen "
             "FROM visitors ORDER BY last_seen DESC"
         )
         cols = [d[0] for d in cur.description]
@@ -96,10 +105,12 @@ def _sync_hermes_memory() -> None:
     """Regenerate Hermes USER.md from the SQLite source of truth."""
     try:
         rows = list_visitors()
-        lines = [
-            f"车牌: {r['plate']}; 单位: {r['company']} ({r['purpose']}); 手机: {r['phone']}"
-            for r in rows
-        ]
+        lines = []
+        for r in rows:
+            line = f"车牌: {r['plate']}; 单位: {r['company']} ({r['purpose']}); 手机: {r['phone']}; 来访次数: {r['visit_count']}"
+            if r.get("name"):
+                line += f"; 姓名: {r['name']}"
+            lines.append(line)
         content = _MEMORY_HEADER + "\n".join(lines) + ("\n" if lines else "")
         HERMES_MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         HERMES_MEMORY_PATH.write_text(content, encoding="utf-8")

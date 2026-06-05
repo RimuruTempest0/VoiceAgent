@@ -31,11 +31,25 @@ def _load_skill_system_prompt() -> str:
     except Exception:
         logger.exception("failed to read SKILL.md")
         return ""
-    # Strip YAML frontmatter so the model sees only the prose instructions.
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end > 0:
             text = text[end + 4 :].lstrip()
+    return text
+
+
+def _load_visitor_memory() -> str:
+    """Load USER.md so the model can recognize return visitors."""
+    p = Path(settings.skill_path).parent.parent.parent / "memories" / "USER.md"
+    if not p.exists():
+        return ""
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    # Strip the Hermes-internal header (everything before §)
+    if "§" in text:
+        text = text.split("§", 1)[1].strip()
     return text
 
 
@@ -59,10 +73,13 @@ class HermesClient:
     def _wrap(self, messages: list[dict]) -> list[dict]:
         if not self.system_prompt:
             return messages
-        # Don't double-inject if the caller already supplied a system message.
         if messages and messages[0].get("role") == "system":
             return messages
-        return [{"role": "system", "content": self.system_prompt}, *messages]
+        memory = _load_visitor_memory()
+        content = self.system_prompt
+        if memory:
+            content += "\n\n### 已知访客记录（来自数据库）\n" + memory
+        return [{"role": "system", "content": content}, *messages]
 
     async def chat(self, messages: list[dict]) -> str:
         payload = {"model": self.model, "messages": self._wrap(messages)}
