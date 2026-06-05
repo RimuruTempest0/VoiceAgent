@@ -18,6 +18,10 @@ class Settings:
         "SKILL_PATH",
         os.path.expanduser("~/.hermes/profiles/voiceagent/skills/visitor-registration/SKILL.md"),
     )
+    data_dir: str = os.getenv(
+        "DATA_DIR",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
+    )
 
     aliyun_ak_id: str = os.getenv("ALIYUN_AK_ID", "")
     aliyun_ak_secret: str = os.getenv("ALIYUN_AK_SECRET", "")
