@@ -1,6 +1,7 @@
-"""Two-turn end-to-end: user info → Hermes confirm → user 对 → Hermes JSON → bridge push.
+"""Multi-turn end-to-end: streams user audio, replies with "对/没错" until
+the agent completes registration (bye reason=registered) or times out.
 
-Verifies the visitor-registration JSON detection + (mocked) WeChat push path.
+Verifies the visitor-registration JSON detection + WeChat push path.
 Run while uvicorn is up.
 """
 from __future__ import annotations
@@ -16,7 +17,10 @@ sys.path.insert(0, "/home/rimuru/VoiceAgent")
 from bridge_server.tts_service import synthesize  # noqa: E402
 
 TURN1 = "您好，我的车牌沪A12345，来蓝色鲸鱼科技送货，手机号13812345678。"
-TURN2 = "对，没错。"
+CONFIRM = "对，没错。"
+
+MAX_TURNS = 6
+TURN_TIMEOUT = 35
 
 
 async def synth(text: str) -> bytes:
@@ -27,7 +31,6 @@ async def synth(text: str) -> bytes:
 
 
 async def background_silence(ws, stop_event: asyncio.Event):
-    """Mimic a real browser: keep sending 20 ms mic frames at all times."""
     chunk = 640 * 2
     silence = b"\x00" * chunk
     try:
@@ -41,37 +44,35 @@ async def background_silence(ws, stop_event: asyncio.Event):
         pass
 
 
-async def stream_audio(ws, pcm: bytes, silence_task: asyncio.Task | None):
-    # Pause background silence while real audio plays, then resume.
+async def stream_audio(ws, pcm: bytes):
     chunk = 640 * 2
     for i in range(0, len(pcm), chunk):
         try:
-            await ws.send(pcm[i:i+chunk])
+            await ws.send(pcm[i : i + chunk])
         except Exception:
             return
         await asyncio.sleep(0.02)
 
 
 async def main(port: int = 8000) -> None:
-    print(f"== synthesizing 2 user utterances")
-    pcm1, pcm2 = await asyncio.gather(synth(TURN1), synth(TURN2))
-    print(f"   turn1={len(pcm1)/2/16000:.2f}s, turn2={len(pcm2)/2/16000:.2f}s")
+    print("== synthesizing user utterances")
+    pcm1, pcm_confirm = await asyncio.gather(synth(TURN1), synth(CONFIRM))
+    print(f"   turn1={len(pcm1)/2/16000:.2f}s, confirm={len(pcm_confirm)/2/16000:.2f}s")
 
     uri = f"ws://127.0.0.1:{port}/voice"
     print(f"== connecting {uri}")
-    state = {
-        "greet_end": False,
-        "first_agent_end": False,
-        "second_agent_end": False,
-        "registered_bye": False,
-        "agent_chunks": [],
-    }
+
+    turns_played = 0
+    registered = False
+    chunks: list[tuple[float, str]] = []
     agent_end_event = asyncio.Event()
+    done_event = asyncio.Event()
 
     async with websockets.connect(uri, max_size=2**22) as ws:
         t0 = time.monotonic()
 
         async def reader():
+            nonlocal registered
             try:
                 while True:
                     msg = await ws.recv()
@@ -79,84 +80,92 @@ async def main(port: int = 8000) -> None:
                         continue
                     data = json.loads(msg)
                     t = data.get("type")
+                    ts = time.monotonic() - t0
                     if t == "agent_chunk":
-                        ts = time.monotonic() - t0
-                        state["agent_chunks"].append((ts, data["text"]))
-                        marker = "greet" if not state["greet_end"] else ("turn1" if not state["first_agent_end"] else "turn2")
-                        print(f"   [{marker} chunk @{ts:5.2f}s] {data['text']}")
+                        chunks.append((ts, data["text"]))
+                        print(f"   [agent @{ts:5.2f}s] {data['text']}")
                     elif t == "agent_end":
-                        if not state["greet_end"]:
-                            state["greet_end"] = True
-                            print(f"   ↳ greet_end @{time.monotonic()-t0:.2f}s")
-                            agent_end_event.set()
-                        elif not state["first_agent_end"]:
-                            state["first_agent_end"] = True
-                            print(f"   ↳ turn1_end @{time.monotonic()-t0:.2f}s")
-                            agent_end_event.set()
-                        else:
-                            state["second_agent_end"] = True
-                            print(f"   ↳ turn2_end @{time.monotonic()-t0:.2f}s")
-                            agent_end_event.set()
+                        print(f"   ↳ agent_end @{ts:.2f}s")
+                        agent_end_event.set()
                     elif t == "user":
-                        print(f"   [user @{time.monotonic()-t0:.2f}s] {data['text']}")
+                        print(f"   [user @{ts:.2f}s] {data['text']}")
                     elif t == "status":
-                        print(f"   [status @{time.monotonic()-t0:.2f}s] {data['stage']}")
+                        print(f"   [status @{ts:.2f}s] {data['stage']}")
                     elif t == "bye":
-                        print(f"   [bye @{time.monotonic()-t0:.2f}s] reason={data.get('reason')}")
-                        state["registered_bye"] = data.get("reason") == "registered"
+                        print(f"   [bye @{ts:.2f}s] reason={data.get('reason')}")
+                        registered = data.get("reason") == "registered"
+                        done_event.set()
                         return
             except websockets.ConnectionClosed:
-                pass
+                done_event.set()
 
         reader_task = asyncio.create_task(reader())
         stop_silence = asyncio.Event()
         silence_task = asyncio.create_task(background_silence(ws, stop_silence))
 
-        # 1) Wait for greeting to finish
+        # Wait for greeting
         await agent_end_event.wait()
         agent_end_event.clear()
+        print("== greeting done, starting conversation")
 
-        # 2) Stream user turn 1
-        print("== user turn 1")
-        stop_silence.set()
-        await silence_task
-        await stream_audio(ws, pcm1, None)
-        stop_silence.clear()
-        silence_task = asyncio.create_task(background_silence(ws, stop_silence))
+        # Turn loop: send info first, then confirm until registered or max
+        while turns_played < MAX_TURNS and not done_event.is_set():
+            pcm = pcm1 if turns_played == 0 else pcm_confirm
+            label = "info" if turns_played == 0 else f"confirm#{turns_played}"
+            print(f"== user turn ({label})")
 
-        # 3) Wait for agent reply to finish
-        await agent_end_event.wait()
-        agent_end_event.clear()
+            stop_silence.set()
+            await silence_task
+            await stream_audio(ws, pcm)
+            stop_silence.clear()
+            silence_task = asyncio.create_task(background_silence(ws, stop_silence))
 
-        # 4) Stream user turn 2 ("对，没错")
-        print("== user turn 2")
-        stop_silence.set()
-        await silence_task
-        await stream_audio(ws, pcm2, None)
-        stop_silence.clear()
-        silence_task = asyncio.create_task(background_silence(ws, stop_silence))
+            turns_played += 1
 
-        # 5) Wait for agent reply (should include JSON detection + push + confirm)
-        try:
-            await asyncio.wait_for(agent_end_event.wait(), timeout=30)
-        except asyncio.TimeoutError:
-            print("!! timeout waiting for turn2 agent_end")
+            # Wait for either agent reply or registration bye
+            agent_end_event.clear()
+            wait_end = asyncio.create_task(agent_end_event.wait())
+            wait_done = asyncio.create_task(done_event.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    {wait_end, wait_done},
+                    timeout=TURN_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for p in pending:
+                    p.cancel()
+                if not done:
+                    print(f"!! timeout waiting for agent reply (turn {turns_played})")
+                    break
+            except asyncio.TimeoutError:
+                print(f"!! timeout waiting for agent reply (turn {turns_played})")
+                break
 
+            if done_event.is_set():
+                break
+
+        # Cleanup
         stop_silence.set()
         try:
             await asyncio.wait_for(silence_task, timeout=1)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, asyncio.CancelledError):
             silence_task.cancel()
 
-        # 6) Wait for server bye or close
-        try:
-            await asyncio.wait_for(reader_task, timeout=5)
-        except asyncio.TimeoutError:
-            await ws.send(json.dumps({"type": "bye"}))
+        if not done_event.is_set():
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                await ws.send(json.dumps({"type": "bye"}))
+                await asyncio.wait_for(reader_task, timeout=3)
 
+    elapsed = time.monotonic() - t0
     print()
-    print("== state:", {k: v for k, v in state.items() if k != "agent_chunks"})
-    print(f"== {len(state['agent_chunks'])} chunks total")
+    print(f"== RESULT: registered={registered}, turns={turns_played}, "
+          f"elapsed={elapsed:.1f}s, chunks={len(chunks)}")
+    if not registered:
+        print("!! FAIL — did not receive bye reason=registered")
+        sys.exit(1)
+    print("== PASS")
 
 
 if __name__ == "__main__":

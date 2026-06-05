@@ -72,6 +72,10 @@ SENTENCE_TERMS = "。！？!?\n"
 # JSON output from the visitor-registration skill — may be fenced or bare.
 JSON_FENCED_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```")
 
+# A JSON key like `"purpose":` or `"confirmed":` — used to spot stray JSON
+# lines that survived sentence-splitting and would otherwise be spoken.
+JSON_KEY_RE = re.compile(r'"\w+"\s*:')
+
 
 def _extract_visitor_json(text: str) -> dict | None:
     """Return the visitor-registration JSON object if present in `text`."""
@@ -111,7 +115,7 @@ def _looks_like_json_fragment(s: str) -> bool:
         return True
     if s.startswith("{") or s.startswith("```") or s.endswith("}") or s.endswith("```"):
         return True
-    if '"action"' in s or '"plate"' in s or '"company"' in s or '"phone"' in s:
+    if JSON_KEY_RE.search(s):
         return True
     return False
 
