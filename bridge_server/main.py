@@ -209,23 +209,7 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
         session.visitor_info = visitor
         pushed = await wechat_push.send_visitor(visitor)
         upsert_visitor(visitor)
-        confirm = (
-            "好的，已通知门卫，请稍等放行。"
-            if pushed
-            else "信息已登记，门卫稍后处理，请稍等。"
-        )
-        if not spoke:
-            await _send_json(ws, {"type": "status", "stage": "tts", "elapsed": session.elapsed()})
-            await _send_json(ws, {"type": "agent_begin"})
-            spoke = True
-        await _send_json(ws, {"type": "agent_chunk", "text": confirm})
-        try:
-            async for chunk in synthesize(confirm):
-                await ws.send_bytes(chunk)
-        except Exception:
-            logger.exception("Confirm TTS failed")
         session.completed = True
-        full_text += "\n" + confirm
 
     if not spoke:
         fallback = "不好意思，没听清，您再说一遍？"
