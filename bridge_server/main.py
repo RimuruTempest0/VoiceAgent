@@ -108,6 +108,27 @@ def _extract_visitor_json(text: str) -> dict | None:
     return None
 
 
+HERMES_MEMORY_PATH = Path(settings.skill_path).parent.parent.parent / "memories" / "USER.md"
+
+
+def _persist_visitor_memory(visitor: dict) -> None:
+    """Append visitor info to Hermes memory so return visits are recognized."""
+    plate = visitor.get("plate", "")
+    company = visitor.get("company", "")
+    purpose = visitor.get("purpose", "")
+    phone = visitor.get("phone", "")
+    line = f"车牌: {plate}; 单位: {company} ({purpose}); 手机: {phone}"
+    try:
+        existing = HERMES_MEMORY_PATH.read_text(encoding="utf-8") if HERMES_MEMORY_PATH.exists() else ""
+        if line in existing:
+            return
+        sep = "\n" if existing and not existing.endswith("\n") else ""
+        HERMES_MEMORY_PATH.write_text(existing + sep + line + "\n", encoding="utf-8")
+        logger.info("Persisted visitor memory: %s", line)
+    except Exception:
+        logger.exception("Failed to persist visitor memory")
+
+
 def _looks_like_json_fragment(s: str) -> bool:
     """Heuristic: should this sentence be sent to TTS, or is it part of a JSON dump?"""
     s = s.strip()
@@ -203,9 +224,9 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
     visitor = _extract_visitor_json(full_text)
 
     if visitor and visitor.get("confirmed"):
-        # Push to WeChat and confirm verbally.
         session.visitor_info = visitor
         pushed = await wechat_push.send_visitor(visitor)
+        _persist_visitor_memory(visitor)
         confirm = (
             "好的，已通知门卫，请稍等放行。"
             if pushed
