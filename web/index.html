@@ -233,7 +233,7 @@ async function startCall() {
       }
       else if (msg.type === 'status')   { setStage(msg.stage); }
       else if (msg.type === 'agent_end'){ currentAgentEl = null; setStage('listen'); }
-      else if (msg.type === 'bye')      { setStage('done'); endCall(); }
+      else if (msg.type === 'bye')      { waitPlaybackThenEnd(); }
     } else {
       enqueuePcm(ev.data);
     }
@@ -241,6 +241,15 @@ async function startCall() {
 
   ws.onerror = () => { setStage('error'); };
   ws.onclose = () => { if (inCall) endCall(); };
+}
+
+async function waitPlaybackThenEnd() {
+  inCall = false;
+  setStage('done');
+  while (playing || playQueue.length) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  endCall();
 }
 
 function endCall() {

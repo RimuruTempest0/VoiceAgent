@@ -180,9 +180,10 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
                 await queue.put(trailing)
             await queue.put(None)
 
-    async def consumer() -> bool:
-        """Returns True if at least one chunk was spoken."""
+    async def consumer() -> tuple[bool, int]:
+        """Returns (spoke, total_audio_bytes)."""
         spoke = False
+        audio_bytes = 0
         while True:
             sentence = await queue.get()
             if sentence is None:
@@ -195,12 +196,13 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
             try:
                 async for chunk in synthesize(sentence):
                     await ws.send_bytes(chunk)
+                    audio_bytes += len(chunk)
             except Exception:
                 logger.exception("TTS sentence failed: %r", sentence)
-        return spoke
+        return spoke, audio_bytes
 
     prod_task = asyncio.create_task(producer())
-    spoke = await consumer()
+    spoke, audio_bytes = await consumer()
     await prod_task
 
     visitor = _extract_visitor_json(full_text)
@@ -241,9 +243,10 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
     await _send_json(ws, {"type": "agent_end"})
 
     if session.completed:
-        # Give the audio a moment to drain client-side, then tell the browser
-        # to hang up.
-        await asyncio.sleep(2.0)
+        # Wait for client-side playback: PCM16 @ 16kHz = 2 bytes/sample,
+        # so duration = audio_bytes / (16000 * 2). Add 1s buffer.
+        drain_secs = audio_bytes / 32000 + 1.0
+        await asyncio.sleep(drain_secs)
         await _send_json(ws, {"type": "bye", "reason": "registered"})
 
 
