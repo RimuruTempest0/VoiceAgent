@@ -40,6 +40,15 @@ def _get_conn() -> sqlite3.Connection:
             last_seen TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS visit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plate TEXT NOT NULL,
+            company TEXT NOT NULL DEFAULT '',
+            purpose TEXT NOT NULL DEFAULT '',
+            visited_at TEXT NOT NULL
+        )
+    """)
     # Migrate: add name column if missing (existing DBs)
     try:
         conn.execute("ALTER TABLE visitors ADD COLUMN name TEXT NOT NULL DEFAULT ''")
@@ -90,6 +99,10 @@ def upsert_visitor(visitor: dict) -> None:
                 (company, final_purpose, phone, final_name, now, plate),
             )
             logger.info("Return visitor: plate=%s (visit #%d)", plate, row[0] + 1)
+        conn.execute(
+            "INSERT INTO visit_log(plate, company, purpose, visited_at) VALUES (?, ?, ?, ?)",
+            (plate, company, purpose, now),
+        )
         conn.commit()
 
     _sync_hermes_memory()

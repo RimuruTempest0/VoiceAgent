@@ -27,6 +27,8 @@ import asyncio
 import json
 import logging
 import re
+import subprocess
+import signal
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -68,6 +70,37 @@ async def _warmup_tts():
 
 
 _greeting_pcm_cache: bytes = b''
+_hermes_gateway_proc: subprocess.Popen | None = None
+
+
+@app.on_event("startup")
+async def _start_hermes_gateway():
+    """Start Hermes gateway as a subprocess."""
+    global _hermes_gateway_proc
+    try:
+        _hermes_gateway_proc = subprocess.Popen(
+            ["hermes", "-p", "voiceagent", "gateway"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=lambda: None,
+        )
+        logger.info("Hermes gateway started (pid=%d)", _hermes_gateway_proc.pid)
+    except Exception as e:
+        logger.warning("Failed to start Hermes gateway: %s", e)
+
+
+@app.on_event("shutdown")
+async def _stop_hermes_gateway():
+    """Stop Hermes gateway subprocess."""
+    global _hermes_gateway_proc
+    if _hermes_gateway_proc and _hermes_gateway_proc.poll() is None:
+        _hermes_gateway_proc.terminate()
+        try:
+            _hermes_gateway_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _hermes_gateway_proc.kill()
+        logger.info("Hermes gateway stopped")
+    _hermes_gateway_proc = None
 
 
 sync_hermes_memory()
