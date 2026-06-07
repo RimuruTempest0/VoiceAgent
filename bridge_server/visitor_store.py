@@ -67,7 +67,7 @@ def upsert_visitor(visitor: dict) -> None:
     now = datetime.now().isoformat(timespec="seconds")
 
     with _get_conn() as conn:
-        cur = conn.execute("SELECT visit_count, name FROM visitors WHERE plate=?", (plate,))
+        cur = conn.execute("SELECT visit_count, name, purpose FROM visitors WHERE plate=?", (plate,))
         row = cur.fetchone()
         if row is None:
             conn.execute(
@@ -78,11 +78,16 @@ def upsert_visitor(visitor: dict) -> None:
             logger.info("New visitor: plate=%s company=%s", plate, company)
         else:
             existing_name = row[1] or ""
+            existing_purpose = row[2] or ""
             final_name = name if name else existing_name
+            if purpose and purpose not in existing_purpose.split("，"):
+                final_purpose = f"{existing_purpose}，{purpose}" if existing_purpose else purpose
+            else:
+                final_purpose = existing_purpose
             conn.execute(
                 "UPDATE visitors SET company=?, purpose=?, phone=?, name=?, "
                 "visit_count=visit_count+1, last_seen=? WHERE plate=?",
-                (company, purpose, phone, final_name, now, plate),
+                (company, final_purpose, phone, final_name, now, plate),
             )
             logger.info("Return visitor: plate=%s (visit #%d)", plate, row[0] + 1)
         conn.commit()
