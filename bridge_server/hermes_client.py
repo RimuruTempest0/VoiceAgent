@@ -110,11 +110,13 @@ class HermesClient:
                     continue
                 choices = chunk.get("choices") or []
                 if not choices:
-                    # Some servers send a trailing usage-only event.
                     continue
-                delta = choices[0].get("delta", {}).get("content")
-                if delta:
-                    yield delta
+                delta = choices[0].get("delta", {})
+                content = delta.get("content")
+                if not content:
+                    logger.debug("empty delta: %s", delta)
+                if content:
+                    yield content
 
     async def close(self) -> None:
         await self._client.aclose()

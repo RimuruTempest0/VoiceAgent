@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import wechat_push
+from .aliyun_token import token_cache
 from .config import settings
 from .hermes_client import hermes
 from .session_manager import CallSession, sessions
@@ -48,6 +49,26 @@ logging.basicConfig(
 logger = logging.getLogger("bridge")
 
 app = FastAPI(title="VoiceAgent Bridge")
+
+
+@app.on_event("startup")
+async def _warmup_tts():
+    """Pre-synthesize greeting audio and cache NLS token."""
+    global _greeting_pcm_cache
+    try:
+        chunks = []
+        async for chunk in synthesize(GREETING):
+            chunks.append(chunk)
+        _greeting_pcm_cache = b''.join(chunks)
+        logger.info("Greeting audio pre-cached: %d bytes (%.1fs)",
+                    len(_greeting_pcm_cache), len(_greeting_pcm_cache) / 32000)
+    except Exception as e:
+        logger.warning("TTS prewarm failed: %s", e)
+        _greeting_pcm_cache = b''
+
+
+_greeting_pcm_cache: bytes = b''
+
 
 sync_hermes_memory()
 
@@ -66,7 +87,7 @@ async def health() -> dict:
     return {"ok": True, "active": sessions.active_count()}
 
 
-GREETING = "您好，请问车牌号多少，今天找哪家公司，什么事儿？"
+GREETING = "您好，车牌号多少，找哪家公司，什么事？"
 
 # Treat full-width Chinese and half-width punctuation as sentence boundaries.
 # Skipped ASCII '.' — too easy to confuse with decimals / abbreviations.
@@ -135,14 +156,17 @@ async def _speak_fixed(ws: WebSocket, session: CallSession, text: str) -> None:
     session.append_agent_turn(text)
     await _send_json(ws, {"type": "status", "stage": "tts", "elapsed": session.elapsed()})
     await _send_json(ws, {"type": "agent_begin"})
-    # Send 500ms of silence so mobile browsers can warm up audio hardware
-    await ws.send_bytes(b'\x00' * 16000)
     await _send_json(ws, {"type": "agent_chunk", "text": text})
-    try:
-        async for chunk in synthesize(text):
-            await ws.send_bytes(chunk)
-    except Exception:
-        logger.exception("TTS failed")
+    if text == GREETING and _greeting_pcm_cache:
+        # Send 800ms silence + greeting as one chunk to avoid timing gaps
+        await ws.send_bytes(b'\x00' * 25600 + _greeting_pcm_cache)
+    else:
+        await ws.send_bytes(b'\x00' * 25600)
+        try:
+            async for chunk in synthesize(text):
+                await ws.send_bytes(chunk)
+        except Exception:
+            logger.exception("TTS failed")
     await _send_json(ws, {"type": "agent_end"})
 
 
@@ -193,10 +217,6 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
             if not spoke:
                 await _send_json(ws, {"type": "status", "stage": "tts", "elapsed": session.elapsed()})
                 await _send_json(ws, {"type": "agent_begin"})
-                # Send 500ms of silence to warm up mobile audio hardware
-                silence = b'\x00' * 16000
-                await ws.send_bytes(silence)
-                audio_bytes += 16000
                 spoke = True
             await _send_json(ws, {"type": "agent_chunk", "text": sentence})
             try:
@@ -227,7 +247,7 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
                         visitor["plate"], visits, user_turns)
         else:
             session.visitor_info = visitor
-            pushed = await wechat_push.send_visitor(visitor)
+            asyncio.create_task(wechat_push.send_visitor(visitor))
             upsert_visitor(visitor)
             session.completed = True
     elif visitor:
@@ -249,10 +269,7 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
     await _send_json(ws, {"type": "agent_end"})
 
     if session.completed:
-        # Wait for client-side playback: PCM16 @ 16kHz = 2 bytes/sample,
-        # so duration = audio_bytes / (16000 * 2). Add 1s buffer.
-        drain_secs = audio_bytes / 32000 + 1.0
-        await asyncio.sleep(drain_secs)
+        await asyncio.sleep(0.2)
         await _send_json(ws, {"type": "bye", "reason": "registered"})
 
 
@@ -304,7 +321,10 @@ async def voice(ws: WebSocket) -> None:
         return a
 
     try:
-        await _start_asr()
+        # Start ASR and send greeting in parallel to reduce startup latency
+        asr_task = asyncio.create_task(_start_asr())
+        await _speak_fixed(ws, session, GREETING)
+        await asr_task
     except Exception:
         logger.exception("ASR start failed")
         await _send_json(ws, {"type": "bye", "reason": "asr_start_failed"})
@@ -321,7 +341,6 @@ async def voice(ws: WebSocket) -> None:
 
     turn_task = asyncio.create_task(turn_loop())
 
-    await _speak_fixed(ws, session, GREETING)
     await _send_json(ws, {"type": "status", "stage": "listen", "elapsed": session.elapsed()})
 
     try:

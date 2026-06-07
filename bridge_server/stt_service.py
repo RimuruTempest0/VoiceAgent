@@ -75,7 +75,7 @@ class AsrSession:
                 "enable_intermediate_result": True,
                 "enable_punctuation_prediction": True,
                 "enable_inverse_text_normalization": True,
-                "max_sentence_silence": 600,  # ms; tighter = snappier turn-taking
+                "max_sentence_silence": 400,  # ms; tighter = snappier turn-taking
             },
         }
         await self._ws.send(json.dumps(start_msg))

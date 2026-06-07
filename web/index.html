@@ -207,30 +207,23 @@ async function startCall() {
   setStage('connect');
   startTimer();
 
-  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
-
+  // Get mic permission first — triggers OS audio route switch to "communication" mode
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
+
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
   micSource = audioCtx.createMediaStreamSource(micStream);
   processor = audioCtx.createScriptProcessor(2048, 1, 1);
   micSource.connect(processor);
   processor.connect(audioCtx.destination);
 
+  // Start WebSocket connection in parallel with audio warmup
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/voice`);
   ws.binaryType = 'arraybuffer';
-
-  ws.onopen = () => {
-    setStage('listen');
-    processor.onaudioprocess = (e) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const f32 = e.inputBuffer.getChannelData(0);
-      const pcm = downsampleTo16k(f32, audioCtx.sampleRate);
-      ws.send(pcm.buffer);
-    };
-  };
 
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
@@ -250,9 +243,39 @@ async function startCall() {
       enqueuePcm(ev.data);
     }
   };
-
   ws.onerror = () => { setStage('error'); };
   ws.onclose = () => { if (inCall) endCall(); };
+
+  // Warmup audio hardware (first call only) while WebSocket connects
+  if (firstPlay) {
+    const warmBuf = audioCtx.createBuffer(1, 16000, 16000);
+    const warmSrc = audioCtx.createBufferSource();
+    warmSrc.buffer = warmBuf;
+    warmSrc.connect(audioCtx.destination);
+    warmSrc.start();
+    await new Promise(r => { warmSrc.onended = r; });
+    const t0 = audioCtx.currentTime;
+    await new Promise(r => {
+      const check = () => {
+        if (audioCtx.currentTime > t0 + 0.05) r();
+        else setTimeout(check, 10);
+      };
+      check();
+    });
+    firstPlay = false;
+  }
+
+  // Wait for WebSocket to be open before sending mic data
+  if (ws.readyState !== WebSocket.OPEN) {
+    await new Promise(r => { ws.onopen = r; });
+  }
+  setStage('listen');
+  processor.onaudioprocess = (e) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const f32 = e.inputBuffer.getChannelData(0);
+    const pcm = downsampleTo16k(f32, audioCtx.sampleRate);
+    ws.send(pcm.buffer);
+  };
 }
 
 async function waitPlaybackThenEnd() {
