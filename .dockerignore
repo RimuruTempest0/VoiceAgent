@@ -1,0 +1,15 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+data/
+nohup.out
+.venv
+venv
+*.log
+test_dialogue/
+TECHNICAL_REPORT.md
+Take_Home_Exam_Voice_Agent.txt
+资料.md
+restart.sh

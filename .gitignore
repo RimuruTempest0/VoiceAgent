@@ -10,6 +10,7 @@ __pycache__/
 *.wav
 *.mp3
 *.pcm
+.nohup.out
 
 # 题目原始材料，避免上传
 Take_Home_Exam_*.txt

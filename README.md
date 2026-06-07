@@ -1,66 +1,117 @@
-# VoiceAgent — 园区访客登记语音 Agent
+# VoiceAgent — 园区访客登记语音 AI
 
-替代保安人工问询的语音 AI：访客在浏览器（或 H5/小程序）通过麦克风讲话，Agent 自然对话采集车牌/单位/事由/手机号，确认后推送结构化访客信息到保安的企业微信群。
+用语音 AI 替代保安人工问询：访客对麦克风说话，Agent 通过自然对话采集车牌/单位/事由/手机号，确认后自动推送访客信息到保安企业微信群。保安也可以在企业微信 @机器人 查询访客统计。
+
+
 
 ## 架构
 
 ```
 浏览器 (web/index.html)
-   │  WebSocket (PCM16 / 16kHz, 双向)
+   │  WebSocket (PCM16 16kHz 双向)
    ▼
-bridge_server (FastAPI)  ←  注入 SKILL.md 为 system role
-   ├──► 阿里云 NLS 实时 ASR   (wss, 流式 SentenceEnd)
-   ├──► Hermes  /v1/chat/completions  (OpenAI 兼容，DeepSeek v4 via OpenRouter)
-   ├──► 阿里云 NLS 流式 TTS   (按句切分，首字节 <300ms)
-   └──► 企微群机器人 webhook  (检测到 register_visitor JSON 后推送)
+bridge_server (FastAPI, port 8000)
+   ├──► 阿里云 NLS 实时 ASR (wss, 流式)
+   ├──► Hermes /v1/chat/completions (流式)
+   ├──► 阿里云 NLS 流式 TTS (按句切分)
+   ├──► 企微 webhook (访客通知)
+   └──► SQLite visitors.db (记录持久化)
+
+Hermes Gateway (企业微信 AI Bot)
+   └──► 保安 @机器人 查询 → visitor-query skill → SQLite
 ```
 
-**关键设计**
-- 浏览器麦克风替代 PSTN，避开 Twilio/SIP 的号码、备案、跨境合规问题。题目允许"号码方案你说了算"。
-- Hermes 流式 → 按句切（。！？\n）→ 分句 TTS：让用户在 Agent 思考结束、整段文字未完时就听到第一句。
-- ASR 自动重启：NLS 闲置 10s 会切断 WS，bridge 检测后透明重建，浏览器无感。
-- SKILL.md 通过 `role:system` 注入：Hermes 自身的 14k system prompt 会软化 skill 约束，注入解决之。
+## 快速部署（Docker）
 
-详细技术决策与 trade-off 见 [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md)。
-
-## 部署
-
-依赖：Python 3.13、Hermes 已在 `http://localhost:8642/v1` 运行、阿里云 NLS 已开通、企微群机器人。
+前提：宿主机已安装并运行 Hermes Agent（`hermes -p voiceagent serve`，默认监听 8642 端口）。
 
 ```bash
-git clone <repo>
+git clone https://github.com/RimuruTempest0/VoiceAgent.git
 cd VoiceAgent
 
+# 1. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入阿里云 NLS 凭证、企微 webhook 等
+
+# 2. 构建镜像
+docker build -t voiceagent .
+
+# 3. 启动服务
+docker run -d \
+  --name voiceagent \
+  --env-file .env \
+  -e HERMES_BASE_URL=http://host.docker.internal:8642/v1 \
+  -p 8000:8000 \
+  -v ./data:/app/data \
+  voiceagent
+
+# 4. 验证
+curl http://localhost:8000/health
+```
+
+> 容器通过 `host.docker.internal` 连接宿主机上的 Hermes 服务。
+
+浏览器打开 `http://localhost:8000` 即可使用。
+
+## 本地开发部署
+
+依赖：Python 3.11+、Hermes Agent、阿里云 NLS 已开通。
+
+```bash
+# 1. 安装 Python 依赖
 python3 -m venv .venv
 .venv/bin/pip install -r bridge_server/requirements.txt
 
-cp bridge_server/.env.example .env
-# 编辑 .env，填入阿里云 AK、AppKey、企微 webhook URL
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env
 
-.venv/bin/python -m uvicorn bridge_server.main:app --host 0.0.0.0 --port 8000
+# 3. 安装 Hermes Agent (如果还没有)
+# 参考 https://github.com/NousResearch/hermes-agent
+
+# 4. 启动服务
+.venv/bin/python -m bridge_server.main
 ```
 
-浏览器打开 `http://127.0.0.1:8000` → 点中间绿色按钮 → 对麦克风说话。
-门卫的企业微信群里会收到访客卡片。
-
-冒烟测试：
-```bash
-.venv/bin/python bridge_server/tests/e2e_register.py     # 2-turn 全链路
-```
+服务启动后会自动：
+- 预缓存 greeting TTS 音频
+- 启动 Hermes gateway（如果配置了企业微信 AI Bot）
 
 ## 环境变量
 
-| 变量 | 说明 | 示例 |
-|---|---|---|
-| `HOST` / `PORT` | bridge 监听 | `0.0.0.0` / `8000` |
-| `HERMES_BASE_URL` | Hermes OpenAI 兼容端点 | `http://localhost:8642/v1` |
-| `HERMES_API_KEY` | Hermes 鉴权 | `voiceagent-secret-key-2024` |
-| `HERMES_MODEL` | Hermes 模型 alias | `hermes-agent` |
-| `SKILL_PATH` | SKILL.md 路径，启动时加载注入 | `~/.hermes/profiles/voiceagent/skills/visitor-registration/SKILL.md` |
-| `ALIYUN_AK_ID` / `ALIYUN_AK_SECRET` | NLS Token 签名 | RAM 子账号 + `AliyunNLSFullAccess` 策略 |
-| `ALIYUN_NLS_APPKEY` | NLS 项目 AppKey | NLS 控制台「全部项目」 |
-| `ALIYUN_NLS_REGION` | NLS 区域 | `cn-shanghai` |
-| `ALIYUN_NLS_TTS_VOICE` | TTS 音色 | `zhixiaoxia` |
-| `WECHAT_WEBHOOK_URL` | 企微群机器人 webhook | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...` |
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `ALIYUN_AK_ID` | 是 | 阿里云 AccessKey ID |
+| `ALIYUN_AK_SECRET` | 是 | 阿里云 AccessKey Secret |
+| `ALIYUN_NLS_APPKEY` | 是 | NLS 项目 AppKey |
+| `ALIYUN_NLS_REGION` | 否 | NLS 区域，默认 `cn-shanghai` |
+| `ALIYUN_NLS_TTS_VOICE` | 否 | TTS 音色，默认 `zhixiaoxia` |
+| `WECHAT_WEBHOOK_URL` | 是 | 企微群机器人 webhook URL |
+| `HERMES_BASE_URL` | 否 | Hermes 端点，默认 `http://localhost:8642/v1` |
+| `WECOM_BOT_ID` | 否 | 企微 AI Bot ID（查询功能） |
+| `WECOM_SECRET` | 否 | 企微 AI Bot Secret |
+| `HOST` / `PORT` | 否 | 监听地址，默认 `0.0.0.0:8000` |
 
-> 凭证类变量都在 `.env`（已 gitignore）。
+## 项目结构
+
+```
+VoiceAgent/
+├── bridge_server/          # FastAPI 主服务
+│   ├── main.py             # WebSocket 路由 + 流式管道
+│   ├── stt_service.py      # 阿里云 NLS ASR
+│   ├── tts_service.py      # 阿里云 NLS TTS
+│   ├── hermes_client.py    # Hermes LLM 客户端
+│   ├── visitor_store.py    # SQLite 访客存储
+│   ├── wechat_push.py      # 企微 webhook 推送
+│   └── config.py           # 配置加载
+├── web/                    # 前端页面
+│   └── index.html          # 单页面，含麦克风采集 + 音频播放
+├── skills/                 # Hermes 技能定义
+│   ├── visitor-registration/  # 访客登记 skill
+│   └── visitor-query/         # 访客查询 skill
+├── data/                   # 运行时数据（gitignore）
+│   └── visitors.db         # SQLite 数据库
+├── Dockerfile              # Docker 构建
+├── docker-entrypoint.sh    # 容器启动脚本
+└── .env.example            # 环境变量模板
+```

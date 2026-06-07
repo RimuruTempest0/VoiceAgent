@@ -82,7 +82,6 @@ async def _start_hermes_gateway():
             ["hermes", "-p", "voiceagent", "gateway"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            preexec_fn=lambda: None,
         )
         logger.info("Hermes gateway started (pid=%d)", _hermes_gateway_proc.pid)
     except Exception as e:
@@ -373,6 +372,15 @@ async def voice(ws: WebSocket) -> None:
             await _handle_user_turn(ws, session, text)
 
     turn_task = asyncio.create_task(turn_loop())
+
+    # Pre-warm TTS connection path while user speaks (DNS/TLS cache)
+    async def _tts_prewarm():
+        try:
+            async for _ in synthesize("嗯"):
+                break
+        except Exception:
+            pass
+    asyncio.create_task(_tts_prewarm())
 
     await _send_json(ws, {"type": "status", "stage": "listen", "elapsed": session.elapsed()})
 
