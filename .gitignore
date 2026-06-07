@@ -21,3 +21,7 @@ test_dialogue/
 # 编辑器
 .vscode/
 .idea/
+
+# 运维脚本和数据
+restart.sh
+data/visitors.db

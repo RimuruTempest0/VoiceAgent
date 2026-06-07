@@ -85,6 +85,7 @@ let currentPartialEl = null;
 let currentAgentEl = null;
 let playQueue = [];
 let playing = false;
+let firstPlay = true;
 
 function setStage(name) {
   const s = STAGE[name] || STAGE.idle;
@@ -151,6 +152,17 @@ async function enqueuePcm(arrayBuf) {
 
 async function drainPlayback() {
   playing = true;
+  if (firstPlay) {
+    firstPlay = false;
+    const silence = new Float32Array(4800);
+    const buf = audioCtx.createBuffer(1, 4800, 16000);
+    buf.copyToChannel(silence, 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start();
+    await new Promise(r => { src.onended = r; });
+  }
   while (playQueue.length) {
     const f32 = playQueue.shift();
     const buf = audioCtx.createBuffer(1, f32.length, 16000);
@@ -158,9 +170,8 @@ async function drainPlayback() {
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
     src.connect(audioCtx.destination);
-    const dur = f32.length / 16000;
     src.start();
-    await new Promise(r => setTimeout(r, dur * 1000));
+    await new Promise(r => { src.onended = r; });
   }
   playing = false;
 }
@@ -189,14 +200,15 @@ function floatToPcm16(f32) {
 
 async function startCall() {
   inCall = true;
+  firstPlay = true;
   $btn.classList.remove('bg-emerald-500', 'hover:bg-emerald-400');
   $btn.classList.add('bg-red-500', 'hover:bg-red-400', 'pulse', 'text-red-400');
   $mic.textContent = '正在通话…点击挂断';
   setStage('connect');
   startTimer();
 
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-  // sampleRate hint isn't always honored; we resample defensively below.
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
 
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -263,7 +275,6 @@ function endCall() {
   try { processor && processor.disconnect(); } catch {}
   try { micSource && micSource.disconnect(); } catch {}
   try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch {}
-  try { audioCtx && audioCtx.close(); } catch {}
   try { ws && ws.close(); } catch {}
   ws = null;
 }

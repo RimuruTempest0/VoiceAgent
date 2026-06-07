@@ -55,7 +55,7 @@ async def synthesize(
             "format": "pcm",
             "sample_rate": sample_rate,
             "volume": 60,
-            "speech_rate": 100,
+            "speech_rate": 80,
             "pitch_rate": 0,
         },
     }

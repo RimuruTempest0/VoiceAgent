@@ -58,7 +58,7 @@ if WEB_DIR.exists():
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/health")
@@ -135,6 +135,8 @@ async def _speak_fixed(ws: WebSocket, session: CallSession, text: str) -> None:
     session.append_agent_turn(text)
     await _send_json(ws, {"type": "status", "stage": "tts", "elapsed": session.elapsed()})
     await _send_json(ws, {"type": "agent_begin"})
+    # Send 500ms of silence so mobile browsers can warm up audio hardware
+    await ws.send_bytes(b'\x00' * 16000)
     await _send_json(ws, {"type": "agent_chunk", "text": text})
     try:
         async for chunk in synthesize(text):
@@ -191,6 +193,10 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
             if not spoke:
                 await _send_json(ws, {"type": "status", "stage": "tts", "elapsed": session.elapsed()})
                 await _send_json(ws, {"type": "agent_begin"})
+                # Send 500ms of silence to warm up mobile audio hardware
+                silence = b'\x00' * 16000
+                await ws.send_bytes(silence)
+                audio_bytes += 16000
                 spoke = True
             await _send_json(ws, {"type": "agent_chunk", "text": sentence})
             try:
