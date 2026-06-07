@@ -90,6 +90,14 @@ def upsert_visitor(visitor: dict) -> None:
     _sync_hermes_memory()
 
 
+def get_visit_count(plate: str) -> int:
+    """Return the visit_count for a plate, or 0 if not found."""
+    with _get_conn() as conn:
+        cur = conn.execute("SELECT visit_count FROM visitors WHERE plate=?", (plate.strip(),))
+        row = cur.fetchone()
+        return row[0] if row else 0
+
+
 def list_visitors() -> list[dict]:
     """Return all visitors ordered by most recent visit."""
     with _get_conn() as conn:

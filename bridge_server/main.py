@@ -39,7 +39,7 @@ from .hermes_client import hermes
 from .session_manager import CallSession, sessions
 from .stt_service import AsrSession
 from .tts_service import synthesize
-from .visitor_store import upsert_visitor, sync_hermes_memory
+from .visitor_store import upsert_visitor, sync_hermes_memory, get_visit_count
 
 logging.basicConfig(
     level=settings.log_level,
@@ -205,11 +205,26 @@ async def _stream_reply(ws: WebSocket, session: CallSession) -> None:
 
     visitor = _extract_visitor_json(full_text)
 
-    if visitor and visitor.get("confirmed"):
-        session.visitor_info = visitor
-        pushed = await wechat_push.send_visitor(visitor)
-        upsert_visitor(visitor)
-        session.completed = True
+    REQUIRED_FIELDS = ("plate", "company", "phone", "purpose")
+    user_turns = sum(1 for m in session.transcript if m.get("role") == "user")
+    if (
+        visitor
+        and visitor.get("confirmed")
+        and all(visitor.get(f) for f in REQUIRED_FIELDS)
+    ):
+        visits = get_visit_count(visitor["plate"])
+        if visits >= 3 and user_turns < 2:
+            logger.info("Blocking premature registration for returning visitor %s "
+                        "(visits=%d, user_turns=%d) — need confirmation first",
+                        visitor["plate"], visits, user_turns)
+        else:
+            session.visitor_info = visitor
+            pushed = await wechat_push.send_visitor(visitor)
+            upsert_visitor(visitor)
+            session.completed = True
+    elif visitor:
+        logger.warning("Incomplete visitor JSON, missing: %s",
+                       [f for f in REQUIRED_FIELDS if not visitor.get(f)])
 
     if not spoke:
         fallback = "不好意思，没听清，您再说一遍？"
