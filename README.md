@@ -1,6 +1,6 @@
 # VoiceAgent — 园区访客登记语音 AI
 
-用语音 AI 替代保安人工问询：访客对麦克风说话，Agent 通过自然对话采集车牌/单位/事由/手机号，确认后自动推送访客信息到保安企业微信群。保安也可以在企业微信 @机器人 查询访客统计。
+用语音 AI 替代保安人工问询：访客对麦克风说话，Agent 通过自然对话采集车牌/单位/事由/手机号，确认后自动推送访客信息到保安企业微信群。保安也可以在企业微信配置机器人查询访客统计。
 
 
 
@@ -23,15 +23,17 @@ Hermes Gateway (企业微信 AI Bot)
 
 ## 快速部署（Docker）
 
-前提：宿主机已安装并运行 Hermes Agent（`hermes -p voiceagent serve`，默认监听 8642 端口）。
+前提：宿主机已安装 Hermes Agent 并手动启动 gateway（企微 AI Bot 功能依赖此服务）。
 
 ```bash
+# 0. 启动 Hermes gateway（宿主机上运行，保持常驻）
+hermes -p voiceagent gateway
+
+# 1. 克隆项目并配置
 git clone https://github.com/RimuruTempest0/VoiceAgent.git
 cd VoiceAgent
-
-# 1. 配置环境变量
 cp .env.example .env
-# 编辑 .env，填入阿里云 NLS 凭证、企微 webhook 等
+# 编辑 .env，填入阿里云 NLS、企微 webhook、DEEPSEEK_API_KEY 等
 
 # 2. 构建镜像
 docker build -t voiceagent .
@@ -40,7 +42,7 @@ docker build -t voiceagent .
 docker run -d \
   --name voiceagent \
   --env-file .env \
-  -e HERMES_BASE_URL=http://host.docker.internal:8642/v1 \
+  -e PORT=8000 \
   -p 8000:8000 \
   -v ./data:/app/data \
   voiceagent
@@ -49,7 +51,15 @@ docker run -d \
 curl http://localhost:8000/health
 ```
 
-> 容器通过 `host.docker.internal` 连接宿主机上的 Hermes 服务。
+### 公网访问（ngrok）
+
+企微回调等场景需要公网 URL，使用 ngrok 将本地端口暴露到公网。ngrok 运行在宿主机上（不在容器内），避免容器重启导致隧道断开。
+
+```bash
+ngrok http 8000
+```
+
+ngrok 免费版每次启动分配随机 URL，重启后需更新企微后台回调地址。
 
 浏览器打开 `http://localhost:8000` 即可使用。
 

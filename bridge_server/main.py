@@ -73,10 +73,24 @@ _greeting_pcm_cache: bytes = b''
 _hermes_gateway_proc: subprocess.Popen | None = None
 
 
+def _is_gateway_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["hermes", "-p", "voiceagent", "gateway", "status"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "is running" in result.stdout
+    except Exception:
+        return False
+
+
 @app.on_event("startup")
 async def _start_hermes_gateway():
-    """Start Hermes gateway as a subprocess."""
+    """Start Hermes gateway as a subprocess if not already running."""
     global _hermes_gateway_proc
+    if _is_gateway_running():
+        logger.info("Hermes gateway already running, skipping launch")
+        return
     try:
         _hermes_gateway_proc = subprocess.Popen(
             ["hermes", "-p", "voiceagent", "gateway"],
