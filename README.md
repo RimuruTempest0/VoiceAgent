@@ -2,7 +2,21 @@
 
 用语音 AI 替代保安人工问询：访客对麦克风说话，Agent 通过自然对话采集车牌/单位/事由/手机号，确认后自动推送访客信息到保安企业微信群。保安也可以在企业微信配置机器人查询访客统计。
 
+本项目为采用传统打电话的方式建立语音交互，而是通过微信扫码导航至网页进行语音交互。
 
+## 技术选型
+
+| 层级 | 技术 | 说明 |
+|------|------|------|
+| 前端 | 原生 HTML + Web Audio API | 单页面，通过 `AudioWorklet` 采集麦克风 PCM16 并双向 WebSocket 传输 |
+| 后端框架 | FastAPI + Uvicorn | 异步 WebSocket 服务，处理音频流管道 |
+| 语音识别 (ASR) | 阿里云 NLS 实时语音识别 | 流式识别，支持中间结果与句尾检测 |
+| 语音合成 (TTS) | 阿里云 NLS 流式语音合成 | 按句切分合成，低延迟返回音频流 |
+| LLM 推理 | DeepSeek (经 Hermes Gateway 路由) | OpenAI 兼容接口，流式输出；通过注入 SKILL.md 控制对话行为 |
+| Agent 框架 | Hermes Agent | 管理 profile/skill/channel，提供企微 AI Bot 能力 |
+| 数据存储 | SQLite | 轻量持久化访客记录，挂载 volume 保证数据安全 |
+| 消息推送 | 企业微信群机器人 Webhook | 登记完成后自动推送访客信息到保安群 |
+| 部署 | Docker + ngrok | 容器化部署，ngrok 提供公网临时访问 |
 
 ## 架构
 
@@ -10,8 +24,8 @@
 浏览器 (web/index.html)
    │  WebSocket (PCM16 16kHz 双向)
    ▼
-bridge_server (FastAPI, port 8000)
-   ├──► 阿里云 NLS 实时 ASR (wss, 流式)
+bridge_server (FastAPI)
+   ├──► 阿里云 NLS 实时 ASR (流式)
    ├──► Hermes /v1/chat/completions (流式)
    ├──► 阿里云 NLS 流式 TTS (按句切分)
    ├──► 企微 webhook (访客通知)
@@ -23,7 +37,7 @@ Hermes Gateway (企业微信 AI Bot)
 
 ## 快速部署（Docker）
 
-前提：宿主机已安装 Hermes Agent 并手动启动 gateway（企微 AI Bot 功能依赖此服务）。
+前提：宿主机已安装 Hermes Agent 并手动启动 gateway，创建 profile 'voiceagent'（企微 AI Bot 功能依赖此服务）。
 
 ```bash
 # 0. 启动 Hermes gateway（宿主机上运行，保持常驻）
@@ -53,7 +67,7 @@ curl http://localhost:8000/health
 
 ### 公网访问（ngrok）
 
-企微回调等场景需要公网 URL，使用 ngrok 将本地端口暴露到公网。ngrok 运行在宿主机上（不在容器内），避免容器重启导致隧道断开。
+为了使公网可以访问服务，使用 ngrok 将本地端口暴露到公网。ngrok 运行在宿主机上（不在容器内），避免容器重启导致隧道断开。
 
 ```bash
 ngrok http 8000
@@ -76,10 +90,7 @@ python3 -m venv .venv
 cp .env.example .env
 # 编辑 .env
 
-# 3. 安装 Hermes Agent (如果还没有)
-# 参考 https://github.com/NousResearch/hermes-agent
-
-# 4. 启动服务
+# 3. 启动服务
 .venv/bin/python -m bridge_server.main
 ```
 
